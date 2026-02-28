@@ -1,8 +1,8 @@
-const CACHE = 'trackflow-modern-v1';
+const CACHE = 'trackflow-modern-v2';
 const ASSETS = [
-  '/',
-  '/index.html',
-  'https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;600;900&family=DM+Mono:wght@400;500&display=swap'
+  '/moderntrack/',
+  '/moderntrack/index.html',
+  '/moderntrack/manifest.json'
 ];
 
 self.addEventListener('install', e => {
