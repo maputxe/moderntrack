@@ -1,8 +1,9 @@
 {
-  "name": "TrackFlow Modern",
+  "name": "TrackFlow Moderno",
   "short_name": "TrackFlow",
   "description": "Seguimiento de actividad física",
-  "start_url": "/",
+  "start_url": "/moderntrack/",
+  "scope": "/moderntrack/",
   "display": "standalone",
   "background_color": "#f5f4f0",
   "theme_color": "#ff4d00",
@@ -11,12 +12,14 @@
     {
       "src": "icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
       "src": "icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
