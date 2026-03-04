@@ -713,9 +713,11 @@ canvas { width:100% !important; display:block; }
     <div id="analysis-save-btns">
       <button class="btn-full" onclick="saveActivity()">Guardar</button>
       <button class="btn-full ghost" style="margin-top:10px" onclick="discardActivity()">Descartar</button>
+      <button class="btn-full ghost" style="margin-top:10px;font-size:11px" onclick="showGpsLog()">Ver log GPS</button>
     </div>
     <div id="analysis-close-btn" style="display:none">
       <button class="btn-full ghost" onclick="closeAnalysis()">Cerrar</button>
+      <button class="btn-full ghost" style="margin-top:10px;font-size:11px" onclick="showGpsLog()">Ver log GPS</button>
     </div>
   </div>
 </div>
@@ -736,10 +738,46 @@ let selectedActivity='caminar', isRunning=false, isPaused=false;
 let startTime=null, pausedTime=0, timerInterval=null;
 let watchId=null, lastPos=null, totalDistance=0, currentSpeed=0, smoothedSpeed=0;
 let speedBuffer=[], trackPoints=[], kmSplits=[], kmDistAcc=0, kmSpeedAcc=[], kmStartTime=null;
+let gpsLog=[];
 let history=[], pendingSummary=null;
 try{history=JSON.parse(localStorage.getItem('tf_history_modern')||'[]');}catch(e){history=[];}
 let ivWorkMin=4,ivWorkSec=0,ivRestMin=0,ivRestSec=30,ivRepeats=4;
 let ivRunning=false,ivCurrentSerie=1,ivPhase='work',ivTimeLeft=0,ivInterval=null;
+
+function showGpsLog(){
+  try{
+    const log = JSON.parse(localStorage.getItem('tf_gps_log')||'[]');
+    const total = log.filter(e=>e.result).length;
+    const aceptados = log.filter(e=>e.result==='ACEPTADO').length;
+    const descartados = log.filter(e=>e.result&&e.result.startsWith('DESC')).length;
+    const razones = {};
+    log.filter(e=>e.reason).forEach(e=>{ razones[e.reason]=(razones[e.reason]||0)+1; });
+
+    const resumen = [
+      `LECTURAS TOTALES: ${total}`,
+      `ACEPTADAS: ${aceptados}`,
+      `DESCARTADAS: ${descartados}`,
+      ``,
+      `RAZONES DE DESCARTE:`,
+      ...Object.entries(razones).map(([k,v])=>`  ${k}: ${v}`),
+      ``,
+      `ÚLTIMAS 20 LECTURAS:`,
+      ...log.filter(e=>e.result).slice(-20).map(e=>
+        `[${e.result}] acc:${e.acc}m ${e.reason?'reason:'+e.reason:''} ${e.dist_m?'dist:'+e.dist_m:''}${e.spd?' spd:'+e.spd+'kmh':''}`
+      )
+    ].join('\n');
+
+    // Mostrar en un textarea para fácil copia
+    const overlay = document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(245,244,240,0.98);z-index:500;padding:40px 28px;overflow-y:auto';
+    overlay.innerHTML=`
+      <div style="font-size:13px;font-weight:700;margin-bottom:16px;text-transform:uppercase;letter-spacing:2px">Log GPS</div>
+      <textarea style="width:100%;height:60vh;font-family:monospace;font-size:11px;padding:12px;border:1px solid #ccc;border-radius:8px;background:#f9f9f9" readonly>${resumen}</textarea>
+      <button onclick="this.parentElement.remove()" style="margin-top:16px;width:100%;padding:16px;background:#0f0f0f;color:white;border:none;border-radius:100px;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:2px;cursor:pointer">Cerrar</button>
+    `;
+    document.body.appendChild(overlay);
+  }catch(e){ showToast('Sin log disponible'); }
+}
 
 function showPage(p){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
@@ -764,8 +802,12 @@ function toggleActivity(){
 
 function startActivity(){
   isRunning=true; isPaused=false; startTime=Date.now();
+  pausedTime=0;
   totalDistance=0; currentSpeed=0; smoothedSpeed=0; lastPos=null; speedBuffer=[];
   trackPoints=[]; kmSplits=[]; kmDistAcc=0; kmSpeedAcc=[]; kmStartTime=Date.now();
+  // Iniciar log de GPS
+  gpsLog=[];
+  gpsLog.push({t:Date.now(), event:'START', activity:selectedActivity});
   document.getElementById('btn-stop').style.display='flex';
   document.getElementById('btn-playpause').innerHTML=SVG_PAUSE;
   document.getElementById('btn-playpause').classList.add('running');
@@ -798,6 +840,9 @@ function stopActivity(){
   isRunning=false; isPaused=false;
   const elapsed=pausedTime+(startTime?Date.now()-startTime:0);
   const secs=Math.floor(elapsed/1000);
+  gpsLog.push({t:Date.now(), event:'STOP', totalKm:totalDistance, totalSecs:secs});
+  // Guardar log completo
+  try{ localStorage.setItem('tf_gps_log', JSON.stringify(gpsLog)); }catch(e){}
   pendingSummary={secs,km:totalDistance,activity:selectedActivity,trackPoints:[...trackPoints],kmSplits:[...kmSplits]};
   document.getElementById('main-time').classList.remove('running');
   document.getElementById('btn-playpause').innerHTML=SVG_PLAY;
@@ -825,7 +870,7 @@ function startGPS(){
   if(!navigator.geolocation){setGpsStatus(false,'Sin GPS');return;}
   setGpsStatus(false,'Buscando...');
   watchId=navigator.geolocation.watchPosition(onGPSUpdate,onGPSError,
-    {enableHighAccuracy:true,maximumAge:1000,timeout:15000});
+    {enableHighAccuracy:true,maximumAge:0,timeout:30000});
 }
 function stopGPS(){
   if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}
@@ -834,14 +879,36 @@ function stopGPS(){
 function onGPSUpdate(pos){
   setGpsStatus(true,'GPS activo');
   const{latitude,longitude,speed,accuracy}=pos.coords;
-  if(accuracy>100) return;
+  const logEntry={t:Date.now(), lat:latitude, lng:longitude, acc:accuracy, chipSpd:speed};
+
+  if(accuracy>80){
+    gpsLog.push({...logEntry, result:'DESCARTADO', reason:'accuracy>80', val:accuracy});
+    return;
+  }
+
   if(lastPos){
     const dist=haversine(lastPos.lat,lastPos.lng,latitude,longitude);
     const td=(Date.now()-lastPos.time)/1000;
-    if(td<=0) return;
+
+    if(td<1){
+      gpsLog.push({...logEntry, result:'DESCARTADO', reason:'td<1s', val:td.toFixed(2)});
+      return;
+    }
+
     const ms=(dist*1000)/td;
     const maxMs=selectedActivity==='bici'?16.7:8.3;
-    if(ms>maxMs||dist<0.002) return;
+
+    if(ms>maxMs){
+      gpsLog.push({...logEntry, result:'DESCARTADO', reason:'velocidad_imposible', val:(ms*3.6).toFixed(1)+'kmh', dist_m:(dist*1000).toFixed(1), td:td.toFixed(1)});
+      return;
+    }
+
+    if(dist<0.0005){
+      gpsLog.push({...logEntry, result:'DESCARTADO', reason:'dist<0.5m', val:(dist*1000).toFixed(2)+'m'});
+      return;
+    }
+
+    // Lectura aceptada
     totalDistance+=dist; kmDistAcc+=dist;
     document.getElementById('stat-km').textContent=totalDistance.toFixed(2);
     const rawSpd=(dist/td)*3600;
@@ -851,16 +918,26 @@ function onGPSUpdate(pos){
     speedBuffer=speedBuffer.filter(s=>s.t>Date.now()-10000);
     smoothedSpeed=speedBuffer.reduce((a,b)=>a+b.spd,0)/speedBuffer.length;
     kmSpeedAcc.push(smoothedSpeed);
+
+    gpsLog.push({...logEntry, result:'ACEPTADO', dist_m:(dist*1000).toFixed(2), td:td.toFixed(1), spd:chipSpd.toFixed(1), totalKm:totalDistance.toFixed(3)});
+
     if(kmDistAcc>=1.0){
       const ss=(Date.now()-kmStartTime)/1000;
       const avg=kmSpeedAcc.reduce((a,b)=>a+b,0)/kmSpeedAcc.length;
       kmSplits.push({km:kmSplits.length+1,secs:ss,avgSpeed:avg});
       kmDistAcc=0; kmSpeedAcc=[]; kmStartTime=Date.now();
     }
+  } else {
+    gpsLog.push({...logEntry, result:'PRIMERA_LECTURA'});
   }
+
   lastPos={lat:latitude,lng:longitude,time:Date.now()};
-  if(speed!==null&&speed>=0) currentSpeed=speed*3.6;
   document.getElementById('stat-speed').textContent=(smoothedSpeed||currentSpeed).toFixed(1);
+
+  // Guardar log en localStorage cada 10 entradas
+  if(gpsLog.length % 10 === 0){
+    try{ localStorage.setItem('tf_gps_log', JSON.stringify(gpsLog)); }catch(e){}
+  }
 }
 function onGPSError(){setGpsStatus(false,'Error GPS');}
 function setGpsStatus(active,text){
