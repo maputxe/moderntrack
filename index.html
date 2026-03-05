@@ -451,9 +451,16 @@ canvas { width:100% !important; display:block; }
       <div class="header-title">TrackFlow</div>
       <div class="header-date" id="today-date"></div>
     </div>
-    <div class="gps-row" style="padding:0;margin:0">
-      <div class="gps-dot" id="gps-dot"></div>
-      <span class="gps-text" id="gps-status">Sin GPS</span>
+    <div style="text-align:right">
+      <div class="gps-row" style="padding:0;margin:0;justify-content:flex-end">
+        <div class="gps-dot" id="gps-dot"></div>
+        <span class="gps-text" id="gps-status">Sin GPS</span>
+      </div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:5px;justify-content:flex-end">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--muted2)" stroke-width="2" width="12" height="12" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span id="step-count" style="font-family:'DM Mono',monospace;font-size:13px;font-weight:500;color:var(--muted)">0</span>
+        <span style="font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:1px">pasos</span>
+      </div>
     </div>
   </div>
 
@@ -688,6 +695,14 @@ canvas { width:100% !important; display:block; }
         <div class="an-val" id="an-pace-avg">—</div>
         <div class="an-lbl">Ritmo medio</div>
       </div>
+      <div class="an-cell">
+        <div class="an-val" id="an-steps">—</div>
+        <div class="an-lbl">Pasos</div>
+      </div>
+      <div class="an-cell">
+        <div class="an-val" id="an-stride">—</div>
+        <div class="an-lbl">Zancada</div>
+      </div>
     </div>
 
     <div class="an-divider"></div>
@@ -805,7 +820,8 @@ function startActivity(){
   pausedTime=0;
   totalDistance=0; currentSpeed=0; smoothedSpeed=0; lastPos=null; speedBuffer=[];
   trackPoints=[]; kmSplits=[]; kmDistAcc=0; kmSpeedAcc=[]; kmStartTime=Date.now();
-  // Iniciar log de GPS
+  // Resetear pasos de actividad
+  activitySteps=0; lastGpsDistForStride=0; lastStepsForStride=0; strideSamples=[];
   gpsLog=[];
   gpsLog.push({t:Date.now(), event:'START', activity:selectedActivity});
   document.getElementById('btn-stop').style.display='flex';
@@ -843,7 +859,7 @@ function stopActivity(){
   gpsLog.push({t:Date.now(), event:'STOP', totalKm:totalDistance, totalSecs:secs});
   // Guardar log completo
   try{ localStorage.setItem('tf_gps_log', JSON.stringify(gpsLog)); }catch(e){}
-  pendingSummary={secs,km:totalDistance,activity:selectedActivity,trackPoints:[...trackPoints],kmSplits:[...kmSplits]};
+  pendingSummary={secs,km:totalDistance,activity:selectedActivity,trackPoints:[...trackPoints],kmSplits:[...kmSplits],steps:activitySteps,strideLength:+strideLength.toFixed(3)};
   document.getElementById('main-time').classList.remove('running');
   document.getElementById('btn-playpause').innerHTML=SVG_PLAY;
   document.getElementById('btn-playpause').classList.remove('running');
@@ -900,6 +916,12 @@ function onGPSUpdate(pos){
 
     if(ms>maxMs){
       gpsLog.push({...logEntry, result:'DESCARTADO', reason:'velocidad_imposible', val:(ms*3.6).toFixed(1)+'kmh', dist_m:(dist*1000).toFixed(1), td:td.toFixed(1)});
+      // Fallback: usar distancia por pasos si GPS da velocidad imposible
+      const stepDist = getStepDistance();
+      if(stepDist > totalDistance) {
+        totalDistance = stepDist;
+        document.getElementById('stat-km').textContent=totalDistance.toFixed(2);
+      }
       return;
     }
 
@@ -971,6 +993,11 @@ function showAnalysis(data,canSave){
   const splits=data.kmSplits||[];
   const bestSplit=splits.length?splits.reduce((a,b)=>a.secs<b.secs?a:b):null;
   document.getElementById('an-pace-best').textContent=bestSplit?formatPace(bestSplit.secs)+' /km':avgP+' /km';
+  // Pasos y zancada
+  const stepsEl = document.getElementById('an-steps');
+  const strideEl = document.getElementById('an-stride');
+  if(stepsEl) stepsEl.textContent = data.steps ? data.steps.toLocaleString('es-AR') : '—';
+  if(strideEl) strideEl.textContent = data.strideLength ? data.strideLength.toFixed(2)+' m' : '—';
   drawChart(data.trackPoints||[],data.secs);
   renderSplits(splits);
   renderZones(data.trackPoints||[],data.activity);
@@ -1485,6 +1512,128 @@ async function spotifyToggle() {
 }
 async function spotifyNext() { await spotifyAPI('/me/player/next', 'POST'); setTimeout(updateSpotifyDisplay, 800); }
 async function spotifyPrev() { await spotifyAPI('/me/player/previous', 'POST'); setTimeout(updateSpotifyDisplay, 800); }
+
+// ============================================================
+// CONTADOR DE PASOS
+// ============================================================
+let stepCount = 0;
+let stepLastDate = '';
+let stepLastAcc = 0;
+let stepThreshold = 12; // umbral de aceleración para detectar un paso
+let stepCooldown = false;
+
+// ============================================================
+// CONTADOR DE PASOS + INTEGRACIÓN GPS
+// ============================================================
+let stepCount = 0;
+let stepLastDate = '';
+let stepThreshold = 12;
+let stepCooldown = false;
+
+// Para integración con GPS durante actividad
+let activitySteps = 0;        // pasos en la actividad actual
+let strideLength = 0.78;      // longitud de zancada en metros (default adulto promedio)
+let strideSamples = [];       // muestras para calibrar zancada con GPS
+let lastGpsDistForStride = 0; // distancia GPS al último checkpoint de calibración
+let lastStepsForStride = 0;   // pasos al último checkpoint de calibración
+
+function initStepCounter() {
+  const today = new Date().toLocaleDateString('es-AR');
+  const saved = JSON.parse(localStorage.getItem('tf_steps') || '{}');
+  if (saved.date === today) {
+    stepCount = saved.count || 0;
+    // Restaurar zancada calibrada si existe
+    if (saved.strideLength) strideLength = saved.strideLength;
+  } else {
+    stepCount = 0;
+    localStorage.setItem('tf_steps', JSON.stringify({date: today, count: 0, strideLength}));
+  }
+  stepLastDate = today;
+  updateStepDisplay();
+
+  if (typeof DeviceMotionEvent === 'undefined') return;
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission().then(p => {
+      if (p === 'granted') startStepListener();
+    }).catch(() => {});
+  } else {
+    startStepListener();
+  }
+}
+
+function startStepListener() {
+  window.addEventListener('devicemotion', (e) => {
+    const acc = e.accelerationIncludingGravity;
+    if (!acc) return;
+    const magnitude = Math.sqrt(acc.x**2 + acc.y**2 + acc.z**2);
+    if (magnitude > stepThreshold && !stepCooldown) {
+      stepCooldown = true;
+      setTimeout(() => { stepCooldown = false; }, 300);
+
+      const today = new Date().toLocaleDateString('es-AR');
+      if (today !== stepLastDate) { stepCount = 0; stepLastDate = today; }
+
+      stepCount++;
+      if (isRunning) activitySteps++;
+
+      updateStepDisplay();
+
+      // Calibrar zancada con GPS cada 50 pasos durante actividad
+      if (isRunning && activitySteps > 0 && activitySteps % 50 === 0) {
+        calibrateStride();
+      }
+
+      // Guardar cada 20 pasos
+      if (stepCount % 20 === 0) {
+        localStorage.setItem('tf_steps', JSON.stringify({date: today, count: stepCount, strideLength}));
+      }
+    }
+  });
+}
+
+function calibrateStride() {
+  // Calcular zancada real basada en distancia GPS y pasos desde último checkpoint
+  const gpsDelta = totalDistance - lastGpsDistForStride; // km
+  const stepsDelta = activitySteps - lastStepsForStride;
+  if (stepsDelta > 0 && gpsDelta > 0.01) { // mínimo 10m de GPS para calibrar
+    const newStride = (gpsDelta * 1000) / stepsDelta; // metros por paso
+    // Solo aceptar zancadas razonables (0.4m a 1.5m)
+    if (newStride >= 0.4 && newStride <= 1.5) {
+      // Promedio ponderado — nuevo valor tiene 30% de peso
+      strideLength = strideLength * 0.7 + newStride * 0.3;
+      strideSamples.push({steps: stepsDelta, gpsM: gpsDelta*1000, stride: newStride});
+      gpsLog.push({t:Date.now(), event:'STRIDE_CALIBRATED', stride:strideLength.toFixed(3), sample:newStride.toFixed(3)});
+    }
+  }
+  lastGpsDistForStride = totalDistance;
+  lastStepsForStride = activitySteps;
+}
+
+function getStepDistance() {
+  // Distancia estimada por pasos en km
+  return (activitySteps * strideLength) / 1000;
+}
+
+function updateStepDisplay() {
+  const el = document.getElementById('step-count');
+  if (el) el.textContent = stepCount.toLocaleString('es-AR');
+}
+
+// Resetear pasos de actividad al arrancar
+const _origStartActivity = startActivity;
+// Patch startActivity para resetear pasos de actividad
+function startActivityWithSteps() {
+  activitySteps = 0;
+  lastGpsDistForStride = 0;
+  lastStepsForStride = 0;
+  strideSamples = [];
+  startActivity();
+}
+
+// Iniciar cuando carga la página
+window.addEventListener('load', () => {
+  initStepCounter();
+});
 
 if('serviceWorker'in navigator)
   window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
