@@ -1430,6 +1430,7 @@ async function refreshSpotifyToken() {
 }
 
 window.addEventListener('load', async () => {
+  // Spotify
   const urlParams = new URLSearchParams(window.location.search);
   const code = urlParams.get('code');
   if (code) {
@@ -1441,6 +1442,11 @@ window.addEventListener('load', async () => {
     spotifyToken = localStorage.getItem('spotify_token');
     if (spotifyToken) { showSpotifyConnected(); startSpotifyPoll(); }
   }
+  // Pasos
+  initStepCounter();
+  // Service worker
+  if('serviceWorker' in navigator)
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
 });
 
 function setMusicSource(source) {
@@ -1514,15 +1520,6 @@ async function spotifyNext() { await spotifyAPI('/me/player/next', 'POST'); setT
 async function spotifyPrev() { await spotifyAPI('/me/player/previous', 'POST'); setTimeout(updateSpotifyDisplay, 800); }
 
 // ============================================================
-// CONTADOR DE PASOS
-// ============================================================
-let stepCount = 0;
-let stepLastDate = '';
-let stepLastAcc = 0;
-let stepThreshold = 12; // umbral de aceleración para detectar un paso
-let stepCooldown = false;
-
-// ============================================================
 // CONTADOR DE PASOS + INTEGRACIÓN GPS
 // ============================================================
 let stepCount = 0;
@@ -1531,11 +1528,11 @@ let stepThreshold = 12;
 let stepCooldown = false;
 
 // Para integración con GPS durante actividad
-let activitySteps = 0;        // pasos en la actividad actual
-let strideLength = 0.78;      // longitud de zancada en metros (default adulto promedio)
-let strideSamples = [];       // muestras para calibrar zancada con GPS
-let lastGpsDistForStride = 0; // distancia GPS al último checkpoint de calibración
-let lastStepsForStride = 0;   // pasos al último checkpoint de calibración
+let activitySteps = 0;
+let strideLength = 0.78;
+let strideSamples = [];
+let lastGpsDistForStride = 0;
+let lastStepsForStride = 0;
 
 function initStepCounter() {
   const today = new Date().toLocaleDateString('es-AR');
@@ -1619,13 +1616,8 @@ function updateStepDisplay() {
   if (el) el.textContent = stepCount.toLocaleString('es-AR');
 }
 
-// Iniciar cuando carga la página
-window.addEventListener('load', () => {
-  initStepCounter();
-});
 
-if('serviceWorker'in navigator)
-  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+
 </script>
 </body>
 </html>
